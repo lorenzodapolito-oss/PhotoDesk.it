@@ -1,6 +1,7 @@
 //! The PhotoDesk window: folders on the left, thumbnails in the middle, preview and details on the
 //! right. Opening a picture hands it to DarkRaw or LightRaw.
 
+use crate::drives;
 use crate::files::{self, Entry, Kind, Sort};
 use crate::launch::{self, Choice, Tool};
 use crate::meta::{FolderMeta, Label};
@@ -104,6 +105,7 @@ pub struct PhotoDesk {
     results: Receiver<Done>,
     subdir_cache: HashMap<PathBuf, Vec<PathBuf>>,
     reveal: bool,
+    drive_names: Arc<Mutex<HashMap<PathBuf, String>>>,
     status: String,
     status_error: bool,
     show_settings: bool,
@@ -128,6 +130,21 @@ impl PhotoDesk {
         spawn_worker(ctx.clone(), Arc::new(Mutex::new(preview_rx)), res_tx, true);
 
         theme::apply(ctx);
+        // drive names are read off the UI thread: a disconnected network drive can be slow
+        let drive_names = Arc::new(Mutex::new(HashMap::new()));
+        {
+            let (names, ctx) = (drive_names.clone(), ctx.clone());
+            let _ = std::thread::Builder::new()
+                .name("photodesk-drives".into())
+                .spawn(move || {
+                    let found: HashMap<PathBuf, String> =
+                        drives::names(&roots()).into_iter().collect();
+                    *names
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner) = found;
+                    ctx.request_repaint();
+                });
+        }
         let mut app = PhotoDesk {
             settings,
             settings_file,
@@ -153,6 +170,7 @@ impl PhotoDesk {
             results,
             subdir_cache: HashMap::new(),
             reveal: true,
+            drive_names: drive_names.clone(),
             status: String::new(),
             status_error: false,
             show_settings: false,
@@ -697,10 +715,17 @@ impl PhotoDesk {
     }
 
     fn tree_node(&mut self, ui: &mut egui::Ui, path: &Path, go: &mut Option<PathBuf>) {
-        let name = path.file_name().map_or_else(
-            || path.to_string_lossy().into_owned(),
-            |n| n.to_string_lossy().into_owned(),
-        );
+        let drive = self
+            .drive_names
+            .try_lock()
+            .ok()
+            .and_then(|m| m.get(path).cloned());
+        let name = drive.unwrap_or_else(|| {
+            path.file_name().map_or_else(
+                || path.to_string_lossy().into_owned(),
+                |n| n.to_string_lossy().into_owned(),
+            )
+        });
         let id = ui.make_persistent_id(("tree", path));
         let mut state =
             egui::collapsing_header::CollapsingState::load_with_default_open(ui.ctx(), id, false);

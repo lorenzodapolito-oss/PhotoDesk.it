@@ -3,6 +3,7 @@
 //! The logic lives in small modules with tests; `app` is the egui front end.
 
 pub mod app;
+pub mod drives;
 pub mod files;
 pub mod launch;
 pub mod meta;
