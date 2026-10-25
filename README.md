@@ -36,8 +36,8 @@ PhotoDesk looks for the other two next to itself: in folders named `DarkRaw` and
 You need Rust 1.95 or newer, a MinGW-w64 toolchain (for example [WinLibs](https://winlibs.com/)) and Git.
 
 ```powershell
-git clone https://github.com/lorenzodapolito-oss/PhotoDesk
-cd PhotoDesk
+git clone https://github.com/lorenzodapolito-oss/PhotoDesk.it
+cd PhotoDesk.it
 cargo run --release
 ```
 
