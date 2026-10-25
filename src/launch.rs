@@ -98,12 +98,77 @@ pub fn find_tool(tool: Tool, configured: &str, exe_dir: Option<&Path>) -> Option
             }
         }
     }
-    if let Some(path) = std::env::var_os("PATH") {
-        dirs.extend(std::env::split_paths(&path));
+    let direct = dirs
+        .iter()
+        .flat_map(|d| names.iter().map(move |n| d.join(n)))
+        .find(|p| p.is_file());
+    if direct.is_some() {
+        return direct;
     }
-    dirs.iter()
+    if let Some(found) = exe_dir.and_then(|d| nearby(tool, d)) {
+        return Some(found);
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
         .flat_map(|d| names.iter().map(move |n| d.join(n)))
         .find(|p| p.is_file())
+}
+
+/// Look around PhotoDesk's own folder: in each of its parent folders (up to six levels), for a
+/// folder named after the tool ("DarkRaw", "DarkRaw-main", "darkraw.it"...), and inside it for the
+/// program, down to three levels ("DarkRaw/dist/DarkRaw-portable/DarkRaw.exe").
+fn nearby(tool: Tool, exe_dir: &Path) -> Option<PathBuf> {
+    let names = exe_file_names(tool);
+    let needle = tool.name().to_lowercase();
+    for ancestor in exe_dir.ancestors().take(7) {
+        let Ok(rd) = std::fs::read_dir(ancestor) else {
+            continue;
+        };
+        let mut candidates: Vec<PathBuf> = rd
+            .flatten()
+            .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .to_lowercase()
+                    .contains(&needle)
+            })
+            .map(|e| e.path())
+            .take(40)
+            .collect();
+        candidates.sort();
+        for dir in candidates {
+            if let Some(p) = find_exe_in(&dir, &names, 3) {
+                return Some(p);
+            }
+        }
+    }
+    None
+}
+
+/// `names` in `dir` or, going down at most `depth` levels, in a folder below it (shallowest first).
+fn find_exe_in(dir: &Path, names: &[String], depth: u8) -> Option<PathBuf> {
+    if let Some(p) = names.iter().map(|n| dir.join(n)).find(|p| p.is_file()) {
+        return Some(p);
+    }
+    if depth == 0 {
+        return None;
+    }
+    let rd = std::fs::read_dir(dir).ok()?;
+    let mut subs: Vec<PathBuf> = rd
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().to_lowercase();
+            !n.starts_with('.')
+                && !["src", "node_modules", "deps", "build", "incremental"].contains(&n.as_str())
+        })
+        .map(|e| e.path())
+        .take(60)
+        .collect();
+    subs.sort();
+    subs.into_iter()
+        .find_map(|d| find_exe_in(&d, names, depth - 1))
 }
 
 /// The command that opens `files` in `exe`. The program's own folder is its working directory, so
@@ -162,6 +227,29 @@ mod tests {
         std::fs::write(&light, b"x").unwrap();
         assert_eq!(find_tool(Tool::LightRaw, "", Some(&d)), Some(light));
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn finds_a_portable_build_in_a_sibling_project_folder() {
+        let root = std::env::temp_dir().join(format!("photodesk-nearby-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let here = root
+            .join("bin")
+            .join("PhotoDesk.it")
+            .join("dist")
+            .join("PhotoDesk-portable");
+        let dark = root
+            .join("bin")
+            .join("DarkRaw")
+            .join("dist")
+            .join("DarkRaw-portable");
+        std::fs::create_dir_all(&here).unwrap();
+        std::fs::create_dir_all(&dark).unwrap();
+        let exe = dark.join(&exe_file_names(Tool::DarkRaw)[0]);
+        std::fs::write(&exe, b"x").unwrap();
+        assert_eq!(nearby(Tool::DarkRaw, &here), Some(exe));
+        assert_eq!(nearby(Tool::LightRaw, &here), None);
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub mod files;
 pub mod launch;
 pub mod meta;
 pub mod settings;
+pub mod theme;
 pub mod thumbs;
 
 /// The name shown in the window title bar.

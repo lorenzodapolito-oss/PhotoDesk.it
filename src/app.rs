@@ -5,6 +5,7 @@ use crate::files::{self, Entry, Kind, Sort};
 use crate::launch::{self, Choice, Tool};
 use crate::meta::{FolderMeta, Label};
 use crate::settings::{self, Settings};
+use crate::theme;
 use crate::thumbs::{self, Pixels};
 use egui::{Color32, Pos2, Rect, Sense, TextureHandle, TextureOptions, Vec2};
 use std::collections::{HashMap, HashSet};
@@ -68,7 +69,7 @@ fn draw_star(painter: &egui::Painter, c: Pos2, r: f32, filled: bool, color: Colo
     } else {
         painter.add(egui::Shape::closed_line(
             pts,
-            egui::Stroke::new(1.0, color.gamma_multiply(0.6)),
+            egui::Stroke::new(1.0, theme::MUTED),
         ));
     }
 }
@@ -103,6 +104,7 @@ pub struct PhotoDesk {
     subdir_cache: HashMap<PathBuf, Vec<PathBuf>>,
     reveal: bool,
     status: String,
+    status_error: bool,
     show_settings: bool,
     columns: usize,
 }
@@ -124,6 +126,7 @@ impl PhotoDesk {
         }
         spawn_worker(ctx.clone(), Arc::new(Mutex::new(preview_rx)), res_tx, true);
 
+        theme::apply(ctx);
         let mut app = PhotoDesk {
             settings,
             settings_file,
@@ -149,6 +152,7 @@ impl PhotoDesk {
             subdir_cache: HashMap::new(),
             reveal: true,
             status: String::new(),
+            status_error: false,
             show_settings: false,
             columns: 1,
         };
@@ -291,17 +295,54 @@ impl PhotoDesk {
             return;
         }
         let mut msgs = Vec::new();
+        let mut failed = false;
         for (tool, files) in groups {
-            let configured = match tool {
-                Tool::DarkRaw => &self.settings.darkraw_path,
-                Tool::LightRaw => &self.settings.lightraw_path,
-            };
-            match launch::open(tool, configured, self.exe_dir.as_deref(), &files) {
+            if launch::find_tool(tool, self.configured(tool), self.exe_dir.as_deref()).is_none() {
+                // not found next to PhotoDesk: ask where it is, and remember the answer
+                let mut dialog =
+                    rfd::FileDialog::new().set_title(format!("Dove si trova {}?", tool.name()));
+                if cfg!(windows) {
+                    dialog = dialog.add_filter("Programma", &["exe"]);
+                }
+                match dialog.pick_file() {
+                    Some(p) => {
+                        *self.configured_mut(tool) = p.to_string_lossy().into_owned();
+                        self.save_settings();
+                    }
+                    None => {
+                        msgs.push(format!(
+                            "{} non trovato: indica dove si trova il programma.",
+                            tool.name()
+                        ));
+                        failed = true;
+                        continue;
+                    }
+                }
+            }
+            match launch::open(tool, self.configured(tool), self.exe_dir.as_deref(), &files) {
                 Ok(()) => msgs.push(format!("{}: {} file aperti", tool.name(), files.len())),
-                Err(e) => msgs.push(e),
+                Err(e) => {
+                    msgs.push(e);
+                    failed = true;
+                }
             }
         }
         self.status = msgs.join(" · ");
+        self.status_error = failed;
+    }
+
+    fn configured(&self, tool: Tool) -> &str {
+        match tool {
+            Tool::DarkRaw => &self.settings.darkraw_path,
+            Tool::LightRaw => &self.settings.lightraw_path,
+        }
+    }
+
+    fn configured_mut(&mut self, tool: Tool) -> &mut String {
+        match tool {
+            Tool::DarkRaw => &mut self.settings.darkraw_path,
+            Tool::LightRaw => &mut self.settings.lightraw_path,
+        }
     }
 
     fn request(&mut self, e: &Entry, preview: bool) {
@@ -670,7 +711,7 @@ impl PhotoDesk {
                 let avail = ui.available_width();
                 let (rect, _) =
                     ui.allocate_exact_size(Vec2::new(avail, avail * 0.75), Sense::hover());
-                ui.painter().rect_filled(rect, 4.0, Color32::from_gray(24));
+                ui.painter().rect_filled(rect, 8.0, theme::MAT);
                 let tex = self
                     .preview
                     .as_ref()
@@ -692,7 +733,7 @@ impl PhotoDesk {
                             egui::Align2::CENTER_CENTER,
                             "Anteprima non disponibile",
                             egui::FontId::proportional(13.0),
-                            Color32::GRAY,
+                            theme::MUTED,
                         );
                     }
                 }
@@ -725,13 +766,7 @@ impl PhotoDesk {
             ui.horizontal(|ui| {
                 for n in 1..=5u8 {
                     let (rect, resp) = ui.allocate_exact_size(Vec2::splat(22.0), Sense::click());
-                    draw_star(
-                        ui.painter(),
-                        rect.center(),
-                        9.0,
-                        n <= cur,
-                        Color32::from_rgb(240, 190, 40),
-                    );
+                    draw_star(ui.painter(), rect.center(), 9.0, n <= cur, theme::STAR);
                     if resp.clicked() {
                         self.rate_selection(if n == cur { 0 } else { n });
                     }
@@ -834,24 +869,31 @@ impl PhotoDesk {
                             let (rect, resp) = ui.allocate_exact_size(cell, Sense::click());
                             let selected = self.selection.contains(&e.path);
                             let painter = ui.painter().with_clip_rect(rect);
+                            let card = rect.shrink(3.0);
                             if selected {
-                                painter.rect_filled(
-                                    rect.shrink(2.0),
-                                    6.0,
-                                    ui.visuals().selection.bg_fill,
+                                painter.rect_filled(card, 10.0, theme::CARD_SELECTED);
+                                painter.rect_stroke(
+                                    card,
+                                    10.0,
+                                    egui::Stroke::new(2.0, theme::ACCENT),
+                                    egui::StrokeKind::Inside,
                                 );
-                            } else if resp.hovered() {
-                                painter.rect_filled(
-                                    rect.shrink(2.0),
-                                    6.0,
-                                    ui.visuals().widgets.hovered.weak_bg_fill,
-                                );
+                            } else {
+                                painter.rect_filled(card, 10.0, theme::CARD);
+                                if resp.hovered() {
+                                    painter.rect_stroke(
+                                        card,
+                                        10.0,
+                                        egui::Stroke::new(1.5, theme::ACCENT.gamma_multiply(0.6)),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
                             }
                             let img_rect = Rect::from_min_size(
                                 rect.min + Vec2::new(6.0, 6.0),
                                 Vec2::splat(size),
                             );
-                            painter.rect_filled(img_rect, 3.0, Color32::from_gray(30));
+                            painter.rect_filled(img_rect, 6.0, theme::MAT);
                             match self.thumbs.get(&e.path) {
                                 Some(Some(t)) => {
                                     painter.image(
@@ -867,7 +909,7 @@ impl PhotoDesk {
                                         egui::Align2::CENTER_CENTER,
                                         if e.kind == Kind::Raw { "RAW" } else { "?" },
                                         egui::FontId::proportional(16.0),
-                                        Color32::GRAY,
+                                        theme::MUTED,
                                     );
                                 }
                                 None => {
@@ -904,16 +946,21 @@ impl PhotoDesk {
                                     ),
                                     5.0,
                                     s < m.rating,
-                                    Color32::from_rgb(240, 190, 40),
+                                    theme::STAR,
                                 );
                             }
                             if e.kind == Kind::Raw {
+                                let badge = Rect::from_min_size(
+                                    img_rect.right_top() + Vec2::new(-34.0, 5.0),
+                                    Vec2::new(30.0, 15.0),
+                                );
+                                painter.rect_filled(badge, 7.0, theme::ACCENT);
                                 painter.text(
-                                    img_rect.right_top() + Vec2::new(-4.0, 3.0),
-                                    egui::Align2::RIGHT_TOP,
+                                    badge.center(),
+                                    egui::Align2::CENTER_CENTER,
                                     "RAW",
                                     egui::FontId::proportional(10.0),
-                                    Color32::from_rgb(200, 200, 210),
+                                    Color32::WHITE,
                                 );
                             }
                             if resp.clicked() {
@@ -976,10 +1023,10 @@ impl PhotoDesk {
                     let found = launch::find_tool(tool, field, self.exe_dir.as_deref());
                     match found {
                         Some(p) => ui.colored_label(
-                            Color32::from_rgb(90, 190, 110),
+                            Color32::from_rgb(28, 120, 68),
                             format!("Trovato: {}", p.display()),
                         ),
-                        None => ui.colored_label(Color32::from_rgb(220, 120, 80), "Non trovato"),
+                        None => ui.colored_label(Color32::from_rgb(180, 70, 30), "Non trovato"),
                     };
                     ui.add_space(6.0);
                 }
@@ -1074,30 +1121,45 @@ impl eframe::App for PhotoDesk {
         self.handle_drops(&ctx);
         self.update_preview_target();
 
-        egui::Panel::top("toolbar").show(ui, |ui| self.toolbar(ui));
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let shown = self.view().len();
-                ui.label(format!(
-                    "{} — {} di {} mostrate, {} selezionate",
-                    self.folder.display(),
-                    shown,
-                    self.entries.len(),
-                    self.selection.len()
-                ));
-                ui.separator();
-                ui.label(&self.status);
+        egui::Panel::top("toolbar")
+            .frame(theme::bar_frame())
+            .show(ui, |ui| self.toolbar(ui));
+        egui::Panel::bottom("status")
+            .frame(theme::bar_frame())
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let shown = self.view().len();
+                    ui.label(format!(
+                        "{} — {} di {} mostrate, {} selezionate",
+                        self.folder.display(),
+                        shown,
+                        self.entries.len(),
+                        self.selection.len()
+                    ));
+                    ui.separator();
+                    ui.colored_label(
+                        if self.status_error {
+                            Color32::from_rgb(170, 40, 40)
+                        } else {
+                            theme::INK
+                        },
+                        &self.status,
+                    );
+                });
             });
-        });
         egui::Panel::left("folders")
             .default_size(230.0)
             .resizable(true)
+            .frame(theme::panel_frame())
             .show(ui, |ui| self.left_panel(ui));
         egui::Panel::right("details")
             .default_size(320.0)
             .resizable(true)
+            .frame(theme::panel_frame())
             .show(ui, |ui| self.right_panel(ui));
-        egui::CentralPanel::default().show(ui, |ui| self.grid(ui));
+        egui::CentralPanel::default()
+            .frame(theme::stage_frame())
+            .show(ui, |ui| self.grid(ui));
         self.settings_window(&ctx);
     }
 
