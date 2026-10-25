@@ -1,0 +1,10 @@
+PhotoDesk portable mode
+
+While this file sits next to the program (PhotoDesk.exe), PhotoDesk keeps its settings in the
+PhotoDeskData folder beside it and writes nothing to %APPDATA%. Copy the whole folder to move
+PhotoDesk with its settings.
+
+Delete this file to use %APPDATA%\PhotoDesk instead.
+
+Put DarkRaw and LightRaw in folders named DarkRaw and LightRaw next to PhotoDesk.exe (or set their
+paths in PhotoDesk > Impostazioni) and PhotoDesk finds them on its own.
