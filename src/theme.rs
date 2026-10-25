@@ -23,6 +23,45 @@ pub const ACCENT: Color32 = Color32::from_rgb(0x52, 0x60, 0xc4);
 /// Stars.
 pub const STAR: Color32 = Color32::from_rgb(0xe8, 0xa3, 0x1c);
 
+/// The folder icon: indigo (back, front).
+const FOLDER_BACK: Color32 = Color32::from_rgb(0x4a, 0x57, 0xb5);
+const FOLDER_FRONT: Color32 = Color32::from_rgb(0x8f, 0x9b, 0xe0);
+
+/// An indigo folder drawn to fit `rect` (the icon keeps a 4:3 shape, centred). `open` shows the
+/// front flap tilted, as an expanded folder in a tree.
+pub fn draw_folder(painter: &egui::Painter, rect: egui::Rect, open: bool) {
+    let w = rect.width().min(rect.height() * 4.0 / 3.0);
+    let h = w * 0.75;
+    let r = egui::Rect::from_center_size(rect.center(), egui::vec2(w, h));
+    let at = |fx: f32, fy: f32| egui::pos2(r.left() + fx * r.width(), r.top() + fy * r.height());
+    let round = CornerRadius::same((w * 0.1).round().clamp(1.0, 255.0) as u8);
+    // the tab and the back
+    painter.rect_filled(
+        egui::Rect::from_min_max(at(0.0, 0.0), at(0.45, 0.35)),
+        round,
+        FOLDER_BACK,
+    );
+    painter.rect_filled(
+        egui::Rect::from_min_max(at(0.0, 0.14), at(1.0, 1.0)),
+        round,
+        FOLDER_BACK,
+    );
+    if open {
+        let flap = vec![at(0.14, 0.38), at(1.0, 0.38), at(0.86, 1.0), at(0.0, 1.0)];
+        painter.add(egui::Shape::convex_polygon(
+            flap,
+            FOLDER_FRONT,
+            Stroke::NONE,
+        ));
+    } else {
+        painter.rect_filled(
+            egui::Rect::from_min_max(at(0.0, 0.3), at(1.0, 1.0)),
+            round,
+            FOLDER_FRONT,
+        );
+    }
+}
+
 fn frame(fill: Color32, margin: i8) -> egui::Frame {
     egui::Frame::new()
         .fill(fill)

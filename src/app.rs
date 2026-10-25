@@ -85,6 +85,7 @@ pub struct PhotoDesk {
     exe_dir: Option<PathBuf>,
     folder: PathBuf,
     entries: Vec<Entry>,
+    subfolders: Vec<PathBuf>,
     meta: FolderMeta,
     sort: Sort,
     descending: bool,
@@ -133,6 +134,7 @@ impl PhotoDesk {
             exe_dir,
             folder: PathBuf::new(),
             entries: Vec::new(),
+            subfolders: Vec::new(),
             meta: FolderMeta::default(),
             sort: Sort::Name,
             descending: false,
@@ -204,6 +206,7 @@ impl PhotoDesk {
                 self.status = format!("Cartella non leggibile: {e}");
             }
         }
+        self.subfolders = files::subdirs(&folder);
         self.meta = FolderMeta::load(&folder);
         self.settings.last_folder = folder.to_string_lossy().into_owned();
         self.folder = folder;
@@ -237,6 +240,23 @@ impl PhotoDesk {
                     && (q.is_empty() || e.name.to_lowercase().contains(&q))
             })
             .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// The sub-folders shown among the pictures (hidden while a rating or label filter is on).
+    fn visible_folders(&self) -> Vec<PathBuf> {
+        if self.min_rating > 0 || self.label_filter.is_some() {
+            return Vec::new();
+        }
+        let q = self.search.trim().to_lowercase();
+        self.subfolders
+            .iter()
+            .filter(|p| {
+                q.is_empty()
+                    || p.file_name()
+                        .is_some_and(|n| n.to_string_lossy().to_lowercase().contains(&q))
+            })
+            .cloned()
             .collect()
     }
 
@@ -459,6 +479,9 @@ impl PhotoDesk {
             if i.key_pressed(egui::Key::Enter) {
                 ks.push(Cmd::Open);
             }
+            if i.key_pressed(egui::Key::Backspace) {
+                ks.push(Cmd::Up);
+            }
             if i.key_pressed(egui::Key::F5) {
                 ks.push(Cmd::Refresh);
             }
@@ -472,6 +495,12 @@ impl PhotoDesk {
                 Cmd::Rate(n) => self.rate_selection(n),
                 Cmd::Open => self.open_selection(self.settings.open_with),
                 Cmd::Refresh => self.refresh(),
+                Cmd::Up => {
+                    if let Some(p) = self.folder.parent().map(Path::to_path_buf) {
+                        self.navigate(p);
+                        return;
+                    }
+                }
                 Cmd::All => {
                     self.selection = view.iter().map(|&i| self.entries[i].path.clone()).collect();
                 }
@@ -679,24 +708,29 @@ impl PhotoDesk {
             state.set_open(true);
         }
         let selected = self.folder == path;
-        let open = state.is_open();
-        state
-            .show_header(ui, |ui| {
+        let header = ui
+            .horizontal(|ui| {
+                // a folder icon instead of the usual triangle: click it to open or close the branch
+                let (rect, resp) = ui.allocate_exact_size(Vec2::new(24.0, 18.0), Sense::click());
+                theme::draw_folder(ui.painter(), rect.shrink(1.0), state.is_open());
+                if resp.clicked() {
+                    state.toggle(ui);
+                }
                 if ui.selectable_label(selected, name).clicked() {
                     *go = Some(path.to_path_buf());
                 }
             })
-            .body(|ui| {
-                let children = self
-                    .subdir_cache
-                    .entry(path.to_path_buf())
-                    .or_insert_with(|| files::subdirs(path))
-                    .clone();
-                for c in children {
-                    self.tree_node(ui, &c, go);
-                }
-            });
-        let _ = open;
+            .response;
+        state.show_body_indented(&header, ui, |ui| {
+            let children = self
+                .subdir_cache
+                .entry(path.to_path_buf())
+                .or_insert_with(|| files::subdirs(path))
+                .clone();
+            for c in children {
+                self.tree_node(ui, &c, go);
+            }
+        });
     }
 
     fn right_panel(&mut self, ui: &mut egui::Ui) {
@@ -837,7 +871,9 @@ impl PhotoDesk {
 
     fn grid(&mut self, ui: &mut egui::Ui) {
         let view = self.view();
-        if view.is_empty() {
+        let folders = self.visible_folders();
+        let nf = folders.len();
+        if view.is_empty() && folders.is_empty() {
             ui.centered_and_justified(|ui| {
                 ui.label(if self.entries.is_empty() {
                     "Nessuna immagine in questa cartella."
@@ -851,7 +887,9 @@ impl PhotoDesk {
         let cell = Vec2::new(size + 12.0, size + 46.0);
         let cols = ((ui.available_width() / cell.x).floor() as usize).max(1);
         self.columns = cols;
-        let rows = view.len().div_ceil(cols);
+        let total = nf + view.len();
+        let rows = total.div_ceil(cols);
+        let mut open_folder: Option<PathBuf> = None;
         let mut clicked: Option<(usize, bool, bool)> = None;
         let mut double: Option<usize> = None;
         let mut want: Vec<usize> = Vec::new();
@@ -864,6 +902,51 @@ impl PhotoDesk {
                     ui.horizontal(|ui| {
                         for col in 0..cols {
                             let pos = row * cols + col;
+                            if pos >= total {
+                                break;
+                            }
+                            if let Some(f) = folders.get(pos) {
+                                let (rect, resp) = ui.allocate_exact_size(cell, Sense::click());
+                                let painter = ui.painter().with_clip_rect(rect);
+                                let card = rect.shrink(3.0);
+                                painter.rect_filled(card, 10.0, theme::CARD);
+                                if resp.hovered() {
+                                    painter.rect_stroke(
+                                        card,
+                                        10.0,
+                                        egui::Stroke::new(1.5, theme::ACCENT.gamma_multiply(0.6)),
+                                        egui::StrokeKind::Inside,
+                                    );
+                                }
+                                let img_rect = Rect::from_min_size(
+                                    rect.min + Vec2::new(6.0, 6.0),
+                                    Vec2::splat(size),
+                                );
+                                theme::draw_folder(
+                                    &painter,
+                                    Rect::from_center_size(
+                                        img_rect.center(),
+                                        Vec2::splat(size * 0.62),
+                                    ),
+                                    resp.hovered(),
+                                );
+                                let name = f
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().into_owned())
+                                    .unwrap_or_default();
+                                painter.text(
+                                    Pos2::new(rect.center().x, img_rect.bottom() + 10.0),
+                                    egui::Align2::CENTER_TOP,
+                                    elide(&name, ((size + 8.0) / 6.5) as usize),
+                                    egui::FontId::proportional(12.0),
+                                    theme::INK,
+                                );
+                                if resp.double_clicked() {
+                                    open_folder = Some(f.clone());
+                                }
+                                continue;
+                            }
+                            let pos = pos - nf;
                             let Some(&idx) = view.get(pos) else { break };
                             let e = &self.entries[idx];
                             let (rect, resp) = ui.allocate_exact_size(cell, Sense::click());
@@ -973,6 +1056,10 @@ impl PhotoDesk {
                     });
                 }
             });
+        if let Some(p) = open_folder {
+            self.navigate(p);
+            return;
+        }
         for idx in want {
             let e = self.entries[idx].clone();
             self.request(&e, false);
@@ -1061,6 +1148,7 @@ enum Cmd {
     Move(i64),
     Open,
     Refresh,
+    Up,
     All,
 }
 
