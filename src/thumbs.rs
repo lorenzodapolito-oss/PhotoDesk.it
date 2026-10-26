@@ -18,6 +18,15 @@ const MAX_IMAGE_BYTES: u64 = 300 * 1024 * 1024;
 
 /// Decode `path` for display, fitted inside `max` pixels. `None` when it can't be shown.
 pub fn load(path: &Path, kind: Kind, max: u32) -> Option<Pixels> {
+    load_with_exif(path, kind, max).map(|(p, _)| p)
+}
+
+/// Like [`load`], and also the camera data of the file (read from the same bytes).
+pub fn load_with_exif(
+    path: &Path,
+    kind: Kind,
+    max: u32,
+) -> Option<(Pixels, Option<crate::exif::ExifSummary>)> {
     let size = std::fs::metadata(path).ok()?.len();
     let bytes_limit = if kind == Kind::Raw {
         MAX_RAW_BYTES
@@ -28,14 +37,22 @@ pub fn load(path: &Path, kind: Kind, max: u32) -> Option<Pixels> {
         return None;
     }
     let data = std::fs::read(path).ok()?;
+    let mut summary = crate::exif::read(&data);
     let (mut img, orientation) = match kind {
         Kind::Image => {
             let img = image::load_from_memory(&data).ok()?;
+            // the real pixel size, whatever the camera data says
+            let s = summary.get_or_insert_with(Default::default);
+            s.width = Some(img.width());
+            s.height = Some(img.height());
             (img, exif_orientation_of_jpeg(&data).unwrap_or(1))
         }
         Kind::Raw => {
             let jpeg = largest_embedded_jpeg(&data)?;
             let img = image::load_from_memory_with_format(jpeg, image::ImageFormat::Jpeg).ok()?;
+            if summary.is_none() {
+                summary = crate::exif::read(jpeg);
+            }
             // The camera's orientation is in the raw file itself (TIFF based), else in the preview.
             let o = exif_orientation_of_tiff(&data)
                 .or_else(|| exif_orientation_of_jpeg(jpeg))
@@ -48,11 +65,12 @@ pub fn load(path: &Path, kind: Kind, max: u32) -> Option<Pixels> {
     }
     img = apply_orientation(img, orientation);
     let rgba = img.to_rgba8();
-    Some(Pixels {
+    let pixels = Pixels {
         width: rgba.width() as usize,
         height: rgba.height() as usize,
         rgba: rgba.into_raw(),
-    })
+    };
+    Some((pixels, summary.filter(|s| !s.is_empty())))
 }
 
 /// The pixel size of the picture, read from the header only (cheap). Raw files: the preview.

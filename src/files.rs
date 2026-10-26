@@ -85,16 +85,32 @@ pub fn subdirs(dir: &Path) -> Vec<PathBuf> {
 pub enum Sort {
     Name,
     Date,
+    /// When the picture was taken (camera data), else the file date.
+    Taken,
     Size,
     Type,
 }
 
 impl Sort {
-    pub const ALL: [Sort; 4] = [Sort::Name, Sort::Date, Sort::Size, Sort::Type];
+    pub const ALL: [Sort; 5] = [Sort::Name, Sort::Taken, Sort::Date, Sort::Size, Sort::Type];
+    /// The name stored in the settings file.
+    pub fn id(self) -> &'static str {
+        match self {
+            Sort::Name => "name",
+            Sort::Date => "date",
+            Sort::Taken => "taken",
+            Sort::Size => "size",
+            Sort::Type => "type",
+        }
+    }
+    pub fn from_id(id: &str) -> Sort {
+        Sort::ALL.into_iter().find(|s| s.id() == id).unwrap_or(Sort::Name)
+    }
     pub fn label(self) -> &'static str {
         match self {
             Sort::Name => "Nome",
-            Sort::Date => "Data",
+            Sort::Date => "Data file",
+            Sort::Taken => "Data scatto",
             Sort::Size => "Dimensione",
             Sort::Type => "Tipo",
         }
@@ -146,10 +162,25 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-pub fn sort_entries(v: &mut [Entry], by: Sort, descending: bool) {
+/// A file time as local "wall clock" time.
+pub fn local_naive(t: SystemTime) -> chrono::NaiveDateTime {
+    chrono::DateTime::<chrono::Local>::from(t).naive_local()
+}
+
+/// Sort `v`. `taken` gives the shooting date of a picture when it is known.
+pub fn sort_entries(
+    v: &mut [Entry],
+    by: Sort,
+    descending: bool,
+    taken: &dyn Fn(&Entry) -> Option<chrono::NaiveDateTime>,
+) {
+    let when = |e: &Entry| taken(e).or_else(|| e.modified.map(local_naive));
     v.sort_by(|a, b| {
         let o = match by {
             Sort::Name => natural_cmp(&a.name, &b.name),
+            Sort::Taken => when(a)
+                .cmp(&when(b))
+                .then_with(|| natural_cmp(&a.name, &b.name)),
             Sort::Date => a
                 .modified
                 .cmp(&b.modified)
@@ -176,6 +207,30 @@ pub fn sort_entries(v: &mut [Entry], by: Sort, descending: bool) {
             o
         }
     });
+}
+
+/// RAW+JPEG pairs: for each raw file, the name of the JPEG with the same name (any case).
+pub fn jpeg_companions(entries: &[Entry]) -> std::collections::HashMap<String, String> {
+    let mut jpegs: std::collections::HashMap<String, &Entry> = std::collections::HashMap::new();
+    for e in entries {
+        let is_jpeg = e
+            .path
+            .extension()
+            .is_some_and(|x| x.eq_ignore_ascii_case("jpg") || x.eq_ignore_ascii_case("jpeg"));
+        if e.kind == Kind::Image && is_jpeg {
+            if let Some(stem) = e.path.file_stem() {
+                jpegs.insert(stem.to_string_lossy().to_lowercase(), e);
+            }
+        }
+    }
+    entries
+        .iter()
+        .filter(|e| e.kind == Kind::Raw)
+        .filter_map(|e| {
+            let stem = e.path.file_stem()?.to_string_lossy().to_lowercase();
+            jpegs.get(&stem).map(|j| (e.name.clone(), j.name.clone()))
+        })
+        .collect()
 }
 
 /// "2026-10-25 11:12" in the local time zone; empty when the time is unknown.
@@ -207,7 +262,13 @@ mod tests {
     use super::*;
 
     fn tmp(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("photodesk-test-{name}-{}", std::process::id()));
+        use std::sync::atomic::{AtomicU32, Ordering as O};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let d = std::env::temp_dir().join(format!(
+            "photodesk-test-{name}-{}-{}",
+            std::process::id(),
+            N.fetch_add(1, O::Relaxed)
+        ));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -230,7 +291,7 @@ mod tests {
         std::fs::write(d.join("c.txt"), b"x").unwrap();
         std::fs::create_dir(d.join("sub.jpg")).unwrap();
         let mut v = scan_dir(&d).unwrap();
-        sort_entries(&mut v, Sort::Name, false);
+        sort_entries(&mut v, Sort::Name, false, &|_| None);
         let names: Vec<_> = v.iter().map(|e| e.name.as_str()).collect();
         assert_eq!(names, ["a.jpg", "b.cr3"]);
         assert!(scan_dir(&d.join("missing")).is_err());
@@ -270,10 +331,52 @@ mod tests {
             modified: None,
         };
         let mut v = vec![mk("a.jpg", 30), mk("b.jpg", 10), mk("c.jpg", 20)];
-        sort_entries(&mut v, Sort::Size, false);
+        sort_entries(&mut v, Sort::Size, false, &|_| None);
         assert_eq!(v.iter().map(|e| e.size).collect::<Vec<_>>(), [10, 20, 30]);
-        sort_entries(&mut v, Sort::Size, true);
+        sort_entries(&mut v, Sort::Size, true, &|_| None);
         assert_eq!(v.iter().map(|e| e.size).collect::<Vec<_>>(), [30, 20, 10]);
+    }
+
+    fn entry(n: &str, kind: Kind) -> Entry {
+        Entry {
+            path: PathBuf::from(format!("/f/{n}")),
+            name: n.into(),
+            kind,
+            size: 1,
+            modified: None,
+        }
+    }
+
+    #[test]
+    fn raw_and_jpeg_with_the_same_name_are_a_pair() {
+        let v = vec![
+            entry("IMG_1.NEF", Kind::Raw),
+            entry("img_1.JPG", Kind::Image),
+            entry("IMG_2.NEF", Kind::Raw),
+            entry("IMG_3.png", Kind::Image),
+            entry("IMG_3.CR3", Kind::Raw),
+        ];
+        let p = jpeg_companions(&v);
+        assert_eq!(p.get("IMG_1.NEF").map(String::as_str), Some("img_1.JPG"));
+        assert!(!p.contains_key("IMG_2.NEF"));
+        assert!(!p.contains_key("IMG_3.CR3"), "only a JPEG makes a pair");
+    }
+
+    #[test]
+    fn sorting_by_shooting_date_beats_the_file_date() {
+        let d = |day| chrono::NaiveDate::from_ymd_opt(2026, 5, day).and_then(|d| d.and_hms_opt(10, 0, 0));
+        let mut v = vec![entry("a.jpg", Kind::Image), entry("b.jpg", Kind::Image)];
+        v[0].modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(1000));
+        v[1].modified = Some(SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(2000));
+        // by file date a comes first; the camera says b was shot first
+        sort_entries(&mut v, Sort::Taken, false, &|e| {
+            if e.name == "a.jpg" { d(2) } else { d(1) }
+        });
+        assert_eq!(v[0].name, "b.jpg");
+        sort_entries(&mut v, Sort::Taken, true, &|e| {
+            if e.name == "a.jpg" { d(2) } else { d(1) }
+        });
+        assert_eq!(v[0].name, "a.jpg");
     }
 
     #[test]

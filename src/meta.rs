@@ -35,11 +35,11 @@ impl Label {
     }
     pub fn rgb(self) -> [u8; 3] {
         match self {
-            Label::Red => [220, 60, 60],
-            Label::Yellow => [225, 190, 40],
-            Label::Green => [70, 180, 90],
-            Label::Blue => [70, 130, 225],
-            Label::Purple => [160, 100, 215],
+            Label::Red => [0xe5, 0x73, 0x7f],
+            Label::Yellow => [0xe8, 0xc4, 0x6a],
+            Label::Green => [0x7f, 0xc5, 0x8b],
+            Label::Blue => [0x6f, 0xa3, 0xe0],
+            Label::Purple => [0xa9, 0x8b, 0xe0],
         }
     }
 }
@@ -86,7 +86,7 @@ impl FolderMeta {
             }
             return Ok(());
         }
-        std::fs::write(&path, json).map_err(|e| format!("{}: {e}", path.display()))
+        crate::fsutil::write_atomic(&path, json.as_bytes())
     }
 
     pub fn get(&self, name: &str) -> Meta {

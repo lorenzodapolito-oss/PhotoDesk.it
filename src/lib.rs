@@ -3,10 +3,15 @@
 //! The logic lives in small modules with tests; `app` is the egui front end.
 
 pub mod app;
+pub mod cache;
 pub mod drives;
+pub mod exif;
 pub mod files;
+pub mod fsutil;
+pub mod history;
 pub mod launch;
 pub mod meta;
+pub mod ops;
 pub mod settings;
 pub mod theme;
 pub mod thumbs;

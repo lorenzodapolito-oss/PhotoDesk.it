@@ -18,6 +18,14 @@ pub struct Settings {
     pub open_with: Choice,
     /// Folders pinned in the left panel.
     pub favorites: Vec<String>,
+    /// Remembered between runs: sort order (`name`, `taken`, ...), direction and view.
+    pub sort: String,
+    pub descending: bool,
+    /// Show the thumbnails as a list with columns instead of a grid.
+    pub list_view: bool,
+    /// Show a RAW and its JPEG of the same name as one picture.
+    pub stack_pairs: bool,
+    pub min_rating: u8,
 }
 
 impl Default for Settings {
@@ -29,6 +37,11 @@ impl Default for Settings {
             thumb_size: 150.0,
             open_with: Choice::Auto,
             favorites: Vec::new(),
+            sort: "name".into(),
+            descending: false,
+            list_view: false,
+            stack_pairs: true,
+            min_rating: 0,
         }
     }
 }
@@ -46,7 +59,7 @@ impl Settings {
             std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         }
         let json = serde_json::to_string_pretty(self).map_err(|e| e.to_string())?;
-        std::fs::write(path, json).map_err(|e| format!("{}: {e}", path.display()))
+        crate::fsutil::write_atomic(path, json.as_bytes())
     }
 }
 
@@ -58,6 +71,16 @@ pub fn settings_path(exe_dir: Option<&Path>) -> PathBuf {
         }
     }
     config_dir().join("PhotoDesk").join("settings.json")
+}
+
+/// Where the thumbnail cache lives: beside the program in portable mode, else next to the settings.
+pub fn cache_path(exe_dir: Option<&Path>) -> PathBuf {
+    if let Some(dir) = exe_dir {
+        if dir.join("portable.txt").is_file() || dir.join("PhotoDesk.portable").is_file() {
+            return dir.join("PhotoDeskData").join("thumbcache");
+        }
+    }
+    config_dir().join("PhotoDesk").join("thumbcache")
 }
 
 fn config_dir() -> PathBuf {
