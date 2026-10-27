@@ -19,10 +19,11 @@ impl Tool {
         }
     }
     /// File names to look for (lower case program names; Windows adds `.exe`).
-    fn program_names(self) -> [&'static str; 2] {
+    fn program_names(self) -> [&'static str; 4] {
+        // the LD editions (with the LD panels) are the same tool under another file name
         match self {
-            Tool::DarkRaw => ["DarkRaw", "darkraw"],
-            Tool::LightRaw => ["LightRaw", "lightraw"],
+            Tool::DarkRaw => ["DarkRaw", "darkraw", "DarkRaw-LD", "darkraw-ld"],
+            Tool::LightRaw => ["LightRaw", "lightraw", "LightRaw-LD", "lightraw-ld"],
         }
     }
     fn folder_hints(self) -> [&'static str; 4] {
@@ -225,6 +226,22 @@ mod tests {
         );
         let light = d.join(&exe_file_names(Tool::LightRaw)[0]);
         std::fs::write(&light, b"x").unwrap();
+        assert_eq!(find_tool(Tool::LightRaw, "", Some(&d)), Some(light));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_ld_edition_is_found_in_the_tools_own_folder() {
+        let d = std::env::temp_dir().join(format!("photodesk-ld-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(d.join("DarkRaw")).unwrap();
+        std::fs::create_dir_all(d.join("LightRaw")).unwrap();
+        let ext = if cfg!(windows) { ".exe" } else { "" };
+        let dark = d.join("DarkRaw").join(format!("DarkRaw-LD{ext}"));
+        let light = d.join("LightRaw").join(format!("LightRaw-LD{ext}"));
+        std::fs::write(&dark, b"x").unwrap();
+        std::fs::write(&light, b"x").unwrap();
+        assert_eq!(find_tool(Tool::DarkRaw, "", Some(&d)), Some(dark));
         assert_eq!(find_tool(Tool::LightRaw, "", Some(&d)), Some(light));
         let _ = std::fs::remove_dir_all(&d);
     }
